@@ -23,7 +23,16 @@ import { DIFFS, DiffId, RULES, Rules, parseDiff } from "./difficulty";
 import { Copy } from "./i18n";
 import { Fx } from "./particles";
 import { persistSave, resolvePlatform, submitBestScore } from "./platform";
-import { drawBackdrop, drawButton, drawChip, drawLabel, drawOrb, hit, roundRect } from "./render";
+import {
+  drawBackdrop,
+  drawButton,
+  drawChip,
+  drawLabel,
+  drawMoveTrail,
+  drawOrb,
+  hit,
+  roundRect,
+} from "./render";
 
 type Screen = "menu" | "diff" | "how" | "play";
 type Anim =
@@ -810,7 +819,7 @@ export class OrbRush {
       const pathEnd = this.hover && this.reach.has(`${this.hover.r},${this.hover.c}`) ? this.hover : null;
       if (pathEnd) {
         const path = findPath(this.board, this.selected, pathEnd);
-        if (path) this.drawPath(path);
+        if (path) this.drawTrail(path.map((p) => this.cellCenter(p.r, p.c)));
       }
     }
 
@@ -846,8 +855,12 @@ export class OrbRush {
       const f = u - i;
       const a = this.cellCenter(path[i].r, path[i].c);
       const b = this.cellCenter(path[i + 1].r, path[i + 1].c);
+      const x = a.x + (b.x - a.x) * f;
+      const y = a.y + (b.y - a.y) * f;
+      const remain = [{ x, y }, ...path.slice(i + 1).map((p) => this.cellCenter(p.r, p.c))];
+      this.drawTrail(remain);
       const hop = Math.abs(Math.sin(this.anim.t * Math.PI * Math.max(2, path.length)));
-      drawOrb(ctx, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, cell * 0.36, this.anim.color, {
+      drawOrb(ctx, x, y, cell * 0.36, this.anim.color, {
         selected: true,
         hop,
         art: this.art,
@@ -880,21 +893,8 @@ export class OrbRush {
     if (this.over) this.drawOver(W, H);
   }
 
-  private drawPath(path: Pos[]): void {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.strokeStyle = "rgba(103, 232, 249, 0.7)";
-    ctx.lineWidth = 3;
-    ctx.setLineDash([7, 6]);
-    ctx.lineDashOffset = -this.time * 28;
-    ctx.beginPath();
-    path.forEach((p, i) => {
-      const { x, y } = this.cellCenter(p.r, p.c);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.restore();
+  private drawTrail(pts: { x: number; y: number }[]): void {
+    drawMoveTrail(this.ctx, pts, this.time, this.layout.board.cell, this.art?.arrow ?? null);
   }
 
   private drawOver(W: number, H: number): void {

@@ -209,3 +209,143 @@ export function hit(
 ): boolean {
   return px >= x && py >= y && px <= x + w && py <= y + h;
 }
+
+export type TrailPt = { x: number; y: number };
+
+export function polylineLength(pts: TrailPt[]): number {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  }
+  return len;
+}
+
+export function samplePolyline(
+  pts: TrailPt[],
+  dist: number,
+): { x: number; y: number; ang: number } | null {
+  if (pts.length < 2) return null;
+  let left = Math.max(0, dist);
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    const seg = Math.hypot(dx, dy);
+    if (left <= seg || i === pts.length - 1) {
+      const t = seg ? Math.min(1, left / seg) : 0;
+      return { x: pts[i - 1].x + dx * t, y: pts[i - 1].y + dy * t, ang: Math.atan2(dy, dx) };
+    }
+    left -= seg;
+  }
+  return null;
+}
+
+function strokePoly(ctx: CanvasRenderingContext2D, pts: TrailPt[]): void {
+  ctx.beginPath();
+  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+  ctx.stroke();
+}
+
+function drawChevron(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ang: number,
+  size: number,
+  color: string,
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(size * 0.58, 0);
+  ctx.lineTo(-size * 0.42, size * 0.44);
+  ctx.lineTo(-size * 0.16, 0);
+  ctx.lineTo(-size * 0.42, -size * 0.44);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawArrowSprite(
+  ctx: CanvasRenderingContext2D,
+  arrow: CanvasImageSource,
+  x: number,
+  y: number,
+  ang: number,
+  size: number,
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.drawImage(arrow, -size * 0.42, -size / 2, size, size);
+  ctx.restore();
+}
+
+export function drawMoveTrail(
+  ctx: CanvasRenderingContext2D,
+  pts: TrailPt[],
+  t: number,
+  cell: number,
+  arrow: CanvasImageSource | null,
+): void {
+  if (pts.length < 2) return;
+  const total = polylineLength(pts);
+  if (total < 8) return;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  ctx.strokeStyle = "rgba(126, 249, 255, 0.2)";
+  ctx.lineWidth = cell * 0.46;
+  ctx.shadowColor = "#7ef9ff";
+  ctx.shadowBlur = 12;
+  strokePoly(ctx, pts);
+
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255, 138, 209, 0.5)";
+  ctx.lineWidth = cell * 0.16;
+  strokePoly(ctx, pts);
+
+  ctx.strokeStyle = "rgba(255, 247, 173, 0.9)";
+  ctx.lineWidth = Math.max(2, cell * 0.055);
+  ctx.setLineDash([cell * 0.2, cell * 0.16]);
+  ctx.lineDashOffset = -t * cell * 1.8;
+  strokePoly(ctx, pts);
+  ctx.setLineDash([]);
+
+  const gap = cell * 0.7;
+  const head = (t * cell * 2.4) % gap;
+  for (let d = head; d < total - cell * 0.18; d += gap) {
+    const s = samplePolyline(pts, d);
+    if (!s) continue;
+    ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 11 + d * 0.1);
+    if (arrow) drawArrowSprite(ctx, arrow, s.x, s.y, s.ang, cell * 0.52);
+    else drawChevron(ctx, s.x, s.y, s.ang, cell * 0.28, "#7ef9ff");
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const s = samplePolyline(pts, (t * cell * 3.4 + (i * total) / 6) % total);
+    if (!s) continue;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = i % 2 ? "#fff7ad" : "#ff9ecf";
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 1.6 + (i % 3) * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const dest = samplePolyline(pts, total);
+  if (dest) {
+    const hop = Math.abs(Math.sin(t * 9));
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = "#fff7ad";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(dest.x, dest.y, cell * (0.26 + hop * 0.08), 0, Math.PI * 2);
+    ctx.stroke();
+    if (arrow) drawArrowSprite(ctx, arrow, dest.x, dest.y, dest.ang, cell * (0.78 + hop * 0.1));
+    else drawChevron(ctx, dest.x, dest.y, dest.ang, cell * 0.4, "#fff7ad");
+  }
+  ctx.restore();
+}

@@ -4,6 +4,7 @@ export type Art = {
   cell: HTMLCanvasElement;
   cellAlt: HTMLCanvasElement;
   boom: HTMLCanvasElement;
+  arrow: HTMLCanvasElement;
   orbs: HTMLCanvasElement[];
 };
 
@@ -127,12 +128,13 @@ function sliceOrbs(sheet: HTMLCanvasElement, want: number): HTMLCanvasElement[] 
 
 export async function loadArt(): Promise<Art | null> {
   try {
-    const [bg, logo, cellImg, cellAltImg, boomImg, orbsImg] = await Promise.all([
+    const [bg, logo, cellImg, cellAltImg, boomImg, arrowImg, orbsImg] = await Promise.all([
       loadImage("./art/bg.jpg"),
       loadImage("./art/logo.png"),
       loadImage("./art/cell.png"),
       loadImage("./art/cell-alt.png"),
       loadImage("./art/boom.png"),
+      loadImage("./art/arrow.png"),
       loadImage("./art/orbs.png"),
     ]);
     const orbs = sliceOrbs(keyGreen(orbsImg), 7);
@@ -142,6 +144,7 @@ export async function loadArt(): Promise<Art | null> {
       cell: trimCanvas(keyGreen(cellImg)),
       cellAlt: trimCanvas(keyGreen(cellAltImg)),
       boom: keyGreen(boomImg),
+      arrow: trimCanvas(keyGreen(arrowImg)),
       orbs,
     };
   } catch {
