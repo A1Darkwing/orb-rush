@@ -1,3 +1,5 @@
+export type LevelId = "easy" | "normal" | "hard" | "insane";
+
 export type Art = {
   bg: HTMLImageElement;
   logo: HTMLCanvasElement;
@@ -6,6 +8,13 @@ export type Art = {
   boom: HTMLCanvasElement;
   arrow: HTMLCanvasElement;
   orbs: HTMLCanvasElement[];
+  btns: {
+    primary?: HTMLCanvasElement;
+    ghost?: HTMLCanvasElement;
+    danger?: HTMLCanvasElement;
+    gold?: HTMLCanvasElement;
+  };
+  levels: Partial<Record<LevelId, HTMLCanvasElement>>;
 };
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -15,6 +24,26 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error(src));
     img.src = src;
   });
+}
+
+function keyScreen(img: HTMLImageElement): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, c.width, c.height);
+  const px = data.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const r = px[i];
+    const g = px[i + 1];
+    const b = px[i + 2];
+    if (g > 170 && r < 95 && b < 95 && g > r + 70 && g > b + 70) {
+      px[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  return c;
 }
 
 function keyGreen(img: HTMLImageElement): HTMLCanvasElement {
@@ -128,7 +157,7 @@ function sliceOrbs(sheet: HTMLCanvasElement, want: number): HTMLCanvasElement[] 
 
 export async function loadArt(): Promise<Art | null> {
   try {
-    const [bg, logo, cellImg, cellAltImg, boomImg, arrowImg, orbsImg] = await Promise.all([
+    const [bg, logo, cellImg, cellAltImg, boomImg, arrowImg, orbsImg, btnImg, levelImg] = await Promise.all([
       loadImage("./art/bg.jpg"),
       loadImage("./art/logo.png"),
       loadImage("./art/cell.png"),
@@ -136,8 +165,12 @@ export async function loadArt(): Promise<Art | null> {
       loadImage("./art/boom.png"),
       loadImage("./art/arrow.png"),
       loadImage("./art/orbs.png"),
+      loadImage("./art/btns.png"),
+      loadImage("./art/levels.png"),
     ]);
     const orbs = sliceOrbs(keyGreen(orbsImg), 7);
+    const btnParts = sliceOrbs(keyScreen(btnImg), 4);
+    const levelParts = sliceOrbs(keyScreen(levelImg), 4);
     return {
       bg,
       logo: keyPurple(logo),
@@ -146,6 +179,18 @@ export async function loadArt(): Promise<Art | null> {
       boom: keyGreen(boomImg),
       arrow: trimCanvas(keyGreen(arrowImg)),
       orbs,
+      btns: {
+        primary: btnParts[0],
+        ghost: btnParts[1],
+        danger: btnParts[2],
+        gold: btnParts[3],
+      },
+      levels: {
+        easy: levelParts[0],
+        normal: levelParts[1],
+        hard: levelParts[2],
+        insane: levelParts[3],
+      },
     };
   } catch {
     return null;

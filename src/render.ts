@@ -1,5 +1,45 @@
-import { Art, drawCover } from "./art";
+import { Art, LevelId, drawCover } from "./art";
 import { PALETTE } from "./board";
+
+export type BtnKind = "primary" | "ghost" | "danger";
+
+function srcSize(img: CanvasImageSource): { w: number; h: number } {
+  if ("naturalWidth" in img && (img as HTMLImageElement).naturalWidth) {
+    return { w: (img as HTMLImageElement).naturalWidth, h: (img as HTMLImageElement).naturalHeight };
+  }
+  const c = img as HTMLCanvasElement;
+  return { w: c.width, h: c.height };
+}
+
+export function drawNine(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  const { w: iw, h: ih } = srcSize(img);
+  if (!iw || !ih) return;
+  const cap = Math.floor(Math.min(iw, ih) * 0.36);
+  if (w < cap * 2 || h < cap * 2) {
+    ctx.drawImage(img, x, y, w, h);
+    return;
+  }
+  const mw = iw - cap * 2;
+  const mh = ih - cap * 2;
+  const dw = w - cap * 2;
+  const dh = h - cap * 2;
+  ctx.drawImage(img, 0, 0, cap, cap, x, y, cap, cap);
+  ctx.drawImage(img, iw - cap, 0, cap, cap, x + w - cap, y, cap, cap);
+  ctx.drawImage(img, 0, ih - cap, cap, cap, x, y + h - cap, cap, cap);
+  ctx.drawImage(img, iw - cap, ih - cap, cap, cap, x + w - cap, y + h - cap, cap, cap);
+  ctx.drawImage(img, cap, 0, mw, cap, x + cap, y, dw, cap);
+  ctx.drawImage(img, cap, ih - cap, mw, cap, x + cap, y + h - cap, dw, cap);
+  ctx.drawImage(img, 0, cap, cap, mh, x, y + cap, cap, dh);
+  ctx.drawImage(img, iw - cap, cap, cap, mh, x + w - cap, y + cap, cap, dh);
+  ctx.drawImage(img, cap, cap, mw, mh, x + cap, y + cap, dw, dh);
+}
 
 export function roundRect(
   ctx: CanvasRenderingContext2D,
@@ -141,40 +181,87 @@ export function drawButton(
   w: number,
   h: number,
   label: string,
-  kind: "primary" | "ghost" | "danger" = "ghost",
-  _art: Art | null = null,
+  kind: BtnKind = "ghost",
+  art: Art | null = null,
 ): void {
+  const skin = art?.btns[kind];
+  const ink = kind === "ghost" ? "#5a1d7a" : kind === "danger" ? "#fffdf8" : "#2a1460";
   ctx.save();
-  if (kind === "primary") {
-    const g = ctx.createLinearGradient(x, y, x, y + h);
-    g.addColorStop(0, "#7ef9ff");
-    g.addColorStop(0.55, "#5ad7ff");
-    g.addColorStop(1, "#ff8ad1");
-    ctx.fillStyle = g;
-    ctx.shadowColor = "#fff7ad";
-    ctx.shadowBlur = 12;
-  } else if (kind === "danger") {
-    ctx.fillStyle = "rgba(255, 90, 130, 0.88)";
-    ctx.strokeStyle = "#fffdf8";
+  if (skin) {
+    if (kind === "primary") {
+      ctx.shadowColor = "#7ef9ff";
+      ctx.shadowBlur = 10;
+    }
+    drawNine(ctx, skin, x, y, w, h);
+    ctx.shadowBlur = 0;
   } else {
-    ctx.fillStyle = "rgba(255,252,245,0.88)";
-    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    if (kind === "primary") {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, "#7ef9ff");
+      g.addColorStop(0.55, "#5ad7ff");
+      g.addColorStop(1, "#ff8ad1");
+      ctx.fillStyle = g;
+      ctx.shadowColor = "#fff7ad";
+      ctx.shadowBlur = 12;
+    } else if (kind === "danger") {
+      ctx.fillStyle = "rgba(255, 90, 130, 0.88)";
+    } else {
+      ctx.fillStyle = "rgba(255,252,245,0.88)";
+    }
+    roundRect(ctx, x, y, w, h, 24);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = kind === "primary" ? "#fffdf8" : "rgba(255,255,255,0.85)";
+    ctx.stroke();
   }
-  roundRect(ctx, x, y, w, h, 24);
-  ctx.fill();
+  drawLabel(ctx, label, x + w / 2, y + h / 2, Math.min(18, h * 0.38), ink, "center");
+  ctx.restore();
+}
+
+const LEVEL_INK: Record<LevelId, { title: string; sub: string; best: string }> = {
+  easy: { title: "#14532d", sub: "#166534", best: "#854d0e" },
+  normal: { title: "#0c4a6e", sub: "#075985", best: "#854d0e" },
+  hard: { title: "#7c2d12", sub: "#9a3412", best: "#7c2d12" },
+  insane: { title: "#fffdf8", sub: "#ffe4f3", best: "#fff7ad" },
+};
+
+export function drawLevelCard(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  id: LevelId,
+  title: string,
+  stats: string,
+  best: string,
+  picked: boolean,
+  art: Art | null,
+): void {
+  const skin = art?.levels[id];
+  const ink = LEVEL_INK[id];
+  ctx.save();
+  if (picked) {
+    ctx.shadowColor = "#fff7ad";
+    ctx.shadowBlur = 16;
+  }
+  if (skin) drawNine(ctx, skin, x, y, w, h);
+  else {
+    ctx.fillStyle = picked ? "rgba(255,247,173,0.92)" : "rgba(255,252,245,0.88)";
+    roundRect(ctx, x, y, w, h, 20);
+    ctx.fill();
+  }
   ctx.shadowBlur = 0;
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = kind === "primary" ? "#fffdf8" : "rgba(255,255,255,0.85)";
-  ctx.stroke();
-  drawLabel(
-    ctx,
-    label,
-    x + w / 2,
-    y + h / 2,
-    Math.min(18, h * 0.38),
-    kind === "ghost" ? "#5a1d7a" : kind === "danger" ? "#fffdf8" : "#3b1466",
-    "center",
-  );
+  if (picked) {
+    ctx.strokeStyle = "#fff7ad";
+    ctx.lineWidth = 3;
+    roundRect(ctx, x + 4, y + 4, w - 8, h - 8, 16);
+    ctx.stroke();
+  }
+  drawLabel(ctx, title, x + w / 2, y + h * 0.3, Math.min(22, h * 0.28), ink.title, "center");
+  drawLabel(ctx, stats, x + w / 2, y + h * 0.55, Math.min(13, h * 0.16), ink.sub, "center", "700");
+  drawLabel(ctx, best, x + w / 2, y + h * 0.76, Math.min(12, h * 0.14), ink.best, "center", "700");
   ctx.restore();
 }
 

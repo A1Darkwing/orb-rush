@@ -28,6 +28,7 @@ import {
   drawButton,
   drawChip,
   drawLabel,
+  drawLevelCard,
   drawMoveTrail,
   drawOrb,
   hit,
@@ -337,6 +338,8 @@ export class OrbRush {
     if (!scored) {
       this.combo = 0;
       const grown = growNext(this.board);
+      const extra = Math.max(0, this.rules.spawn - grown.length);
+      if (extra) grown.push(...placeRandom(this.board, extra, false, this.rules.colors));
       const afterGrow = findLines(this.board, this.rules.line);
       if (afterGrow.length) {
         this.spawnAfterClear = true;
@@ -356,7 +359,9 @@ export class OrbRush {
     this.checkOver();
   }
 
+  // End when every cell has an orb. Previews do not count.
   private checkOver(): void {
+    if (this.over) return;
     if (occupiedCount(this.board) < this.rules.rows * this.rules.cols) return;
     this.over = true;
     this.sfx.gameOver();
@@ -417,7 +422,7 @@ export class OrbRush {
         }
       }
       const bw = Math.min(280, W - 48);
-      if (hit(x, y, (W - bw) / 2, H * 0.88, bw, 44)) {
+      if (hit(x, y, (W - bw) / 2, H * 0.88, bw, 48)) {
         this.screen = "menu";
         this.sfx.select();
       }
@@ -653,11 +658,11 @@ export class OrbRush {
   }
 
   private diffCards(W: number, H: number): { id: DiffId; x: number; y: number; w: number; h: number }[] {
-    const gap = 12;
-    const w = Math.min(320, (W - 48 - gap) / 2);
-    const h = Math.min(92, H * 0.14);
+    const gap = 16;
+    const w = Math.min(300, (W - 48 - gap) / 2);
+    const h = Math.min(124, H * 0.2);
     const x0 = (W - w * 2 - gap) / 2;
-    const y0 = H * 0.3;
+    const y0 = H * 0.28;
     return DIFFS.map((id, i) => ({
       id,
       x: x0 + (i % 2) * (w + gap),
@@ -668,32 +673,26 @@ export class OrbRush {
   }
 
   private drawDiff(W: number, H: number): void {
-    const ctx = this.ctx;
-    drawLabel(ctx, this.copy.diffTitle, W / 2, H * 0.14, 28, "#fff7ad", "center");
-    drawLabel(ctx, this.copy.diffHint, W / 2, H * 0.2, 14, "#fffdf8", "center", "600");
+    drawLabel(this.ctx, this.copy.diffTitle, W / 2, H * 0.13, 28, "#fff7ad", "center");
+    drawLabel(this.ctx, this.copy.diffHint, W / 2, H * 0.19, 14, "#fffdf8", "center", "600");
     for (const card of this.diffCards(W, H)) {
       const rules = RULES[card.id];
-      const picked = this.rules.id === card.id;
-      ctx.save();
-      ctx.fillStyle = picked ? "rgba(255,247,173,0.92)" : "rgba(255,252,245,0.88)";
-      roundRect(ctx, card.x, card.y, card.w, card.h, 20);
-      ctx.fill();
-      drawLabel(ctx, this.diffName(card.id), card.x + 16, card.y + 26, 20, "#4a1b6b");
-      drawLabel(
-        ctx,
+      drawLevelCard(
+        this.ctx,
+        card.x,
+        card.y,
+        card.w,
+        card.h,
+        card.id,
+        this.diffName(card.id),
         `${rules.rows}×${rules.cols}  ·  ${this.copy.next} ${rules.spawn}  ·  ${rules.line}+`,
-        card.x + 16,
-        card.y + 52,
-        13,
-        "#6b2d86",
-        "left",
-        "700",
+        `${this.copy.best} ${this.bestBy[card.id]}`,
+        this.rules.id === card.id,
+        this.art,
       );
-      drawLabel(ctx, `${this.copy.best} ${this.bestBy[card.id]}`, card.x + 16, card.y + 74, 12, "#e2a400");
-      ctx.restore();
     }
     const bw = Math.min(280, W - 48);
-    drawButton(ctx, (W - bw) / 2, H * 0.88, bw, 44, this.copy.back, "ghost", this.art);
+    drawButton(this.ctx, (W - bw) / 2, H * 0.88, bw, 48, this.copy.back, "ghost", this.art);
   }
 
   private drawHow(W: number, H: number): void {
