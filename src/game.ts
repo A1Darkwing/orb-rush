@@ -19,10 +19,20 @@ import {
   reachable,
   rowsOf,
 } from "./board";
-import { DIFFS, DiffId, RULES, Rules, parseDiff } from "./difficulty";
+import { DIFFS, DiffId, RULES, Rules, parseDiff, rulesFor } from "./difficulty";
 import { Copy } from "./i18n";
 import { Fx } from "./particles";
-import { persistSave, resolvePlatform, submitBestScore } from "./platform";
+import {
+  AD_REWARD_COINS,
+  Account,
+  persistSave,
+  resolveAccount,
+  resolvePlatform,
+  submitBestScore,
+  watchRewardedAd,
+} from "./platform";
+import { claimCheckout, startCheckout, stripeEnabled } from "./stripe";
+import { COIN_PACKS, PACK_IDS, PackId } from "./store";
 import {
   drawBackdrop,
   drawButton,
@@ -31,11 +41,13 @@ import {
   drawLevelCard,
   drawMoveTrail,
   drawOrb,
+  drawShopCard,
   hit,
   roundRect,
 } from "./render";
+import { THEME_IDS, THEME_PRICE, ThemeId, defaultOwned, normalizeOwned, parseTheme } from "./themes";
 
-type Screen = "menu" | "diff" | "how" | "play";
+type Screen = "menu" | "diff" | "how" | "shop" | "play";
 type Anim =
   | { kind: "move"; path: Pos[]; color: number; t: number }
   | { kind: "clear"; cells: Pos[]; t: number }
@@ -46,6 +58,11 @@ type SaveData = {
   seenHow: boolean;
   difficulty?: string;
   best?: Partial<Record<DiffId, number>>;
+  coins?: number;
+  theme?: string;
+  owned?: string[];
+  buyerId?: string;
+  claimed?: string[];
 };
 
 export class OrbRush {
@@ -84,6 +101,15 @@ export class OrbRush {
   private dpr = 1;
   private layout = { board: { x: 0, y: 0, cell: 40 } };
   private art: Art | null = null;
+  private packs: Partial<Record<ThemeId, Art>> = {};
+  private account: Account = { youtube: false, id: "guest" };
+  private coins = 200;
+  private theme: ThemeId = "candy";
+  private owned: ThemeId[] = defaultOwned();
+  private buyerId = "";
+  private claimed: string[] = [];
+  private paying = false;
+  private adBusy = false;
 
   constructor(canvas: HTMLCanvasElement, copy: Copy, art: Art | null = null) {
     this.canvas = canvas;
@@ -92,6 +118,12 @@ export class OrbRush {
     this.ctx = ctx;
     this.copy = copy;
     this.art = art;
+    this.account = resolveAccount(this.api);
+  }
+
+  setThemePacks(packs: Partial<Record<ThemeId, Art>>): void {
+    this.packs = packs;
+    this.applyTheme(this.theme);
   }
 
   setCopy(copy: Copy): void {
@@ -104,11 +136,13 @@ export class OrbRush {
 
   async boot(saveRaw: string): Promise<void> {
     this.readSave(saveRaw);
+    if (!this.buyerId) this.buyerId = crypto.randomUUID();
     this.resize();
     window.addEventListener("resize", () => this.resize());
     this.bindInput();
     this.api.game.gameReady();
     this.startLoop();
+    await this.claimStripeReturn();
   }
 
   tap(x: number, y: number): void {
@@ -186,15 +220,155 @@ export class OrbRush {
     try {
       const data = JSON.parse(raw) as SaveData;
       this.seenHow = Boolean(data.seenHow);
-      this.rules = RULES[parseDiff(data.difficulty)];
+      this.rules = this.viewportRules(parseDiff(data.difficulty));
       for (const id of DIFFS) {
         this.bestBy[id] = Math.max(0, Math.floor(data.best?.[id] || 0));
       }
       if (!data.best && data.bestScore) this.bestBy.normal = Math.max(0, Math.floor(data.bestScore));
       this.best = this.bestBy[this.rules.id];
+      this.coins = Math.max(0, Math.floor(data.coins ?? this.coins));
+      this.owned = normalizeOwned(data.owned);
+      this.theme = this.owned.includes(parseTheme(data.theme)) ? parseTheme(data.theme) : "candy";
+      this.buyerId = data.buyerId || this.buyerId;
+      this.claimed = Array.isArray(data.claimed) ? data.claimed.filter((id) => typeof id === "string") : [];
+      this.applyTheme(this.theme);
     } catch {
       this.api.health.logWarning();
     }
+  }
+
+  private applyTheme(id: ThemeId): void {
+    if (!this.owned.includes(id)) return;
+    this.theme = id;
+    this.art = this.packs[id] ?? this.packs.candy ?? this.art;
+  }
+
+  private themeName(id: ThemeId): string {
+    if (id === "soccer") return this.copy.themeSoccer;
+    if (id === "egg") return this.copy.themeEgg;
+    return this.copy.themeCandy;
+  }
+
+  private themeHint(id: ThemeId): string {
+    if (id === "soccer") return this.copy.themeSoccerHint;
+    if (id === "egg") return this.copy.themeEggHint;
+    return this.copy.themeCandyHint;
+  }
+
+  private grantCoins(amount: number): void {
+    if (amount <= 0) return;
+    this.coins += amount;
+  }
+
+  private async claimStripeReturn(): Promise<void> {
+    if (!stripeEnabled(this.api)) return;
+    const q = new URLSearchParams(location.search);
+    if (q.get("stripe") === "cancel") {
+      this.showToast(this.copy.stripeCancel);
+      this.clearStripeQuery();
+      return;
+    }
+    const sessionId = q.get("session_id");
+    if (!sessionId) return;
+    if (this.claimed.includes(sessionId)) {
+      this.clearStripeQuery();
+      return;
+    }
+    try {
+      const coins = await claimCheckout(sessionId, this.buyerId);
+      this.grantCoins(coins);
+      this.claimed = [...this.claimed, sessionId].slice(-40);
+      this.screen = "shop";
+      this.showToast(`${this.copy.stripeOk} +${coins}`);
+      this.sfx.winFanfare();
+      void this.writeSave();
+    } catch {
+      this.showToast(this.copy.stripeFail);
+    }
+    this.clearStripeQuery();
+  }
+
+  private clearStripeQuery(): void {
+    const url = new URL(location.href);
+    url.searchParams.delete("session_id");
+    url.searchParams.delete("stripe");
+    history.replaceState({}, "", url.pathname + url.search + url.hash);
+  }
+
+  private async buyPack(id: PackId): Promise<void> {
+    if (!stripeEnabled(this.api)) {
+      this.showToast(this.copy.stripeOff);
+      this.sfx.deny();
+      return;
+    }
+    if (this.paying) return;
+    this.paying = true;
+    try {
+      const url = await startCheckout(id, this.buyerId);
+      location.href = url;
+    } catch {
+      this.showToast(this.copy.stripeFail);
+      this.sfx.deny();
+    } finally {
+      this.paying = false;
+    }
+  }
+
+  private async watchAd(): Promise<void> {
+    if (this.adBusy) {
+      this.showToast(this.copy.adBusy);
+      return;
+    }
+    this.adBusy = true;
+    try {
+      const earned = await watchRewardedAd(this.api);
+      if (!earned) {
+        this.showToast(this.copy.adNo);
+        this.sfx.deny();
+        return;
+      }
+      this.grantCoins(AD_REWARD_COINS);
+      this.showToast(`${this.copy.stripeOk} +${AD_REWARD_COINS}`);
+      this.sfx.winFanfare();
+      void this.writeSave();
+    } finally {
+      this.adBusy = false;
+    }
+  }
+
+  private adCard(W: number, H: number): { x: number; y: number; w: number; h: number } {
+    const w = Math.min(320, W - 48);
+    return { x: (W - w) / 2, y: H * 0.168, w, h: 48 };
+  }
+
+  private packCards(W: number, H: number): { id: PackId; x: number; y: number; w: number; h: number }[] {
+    if (!stripeEnabled(this.api)) return [];
+    const gap = 10;
+    const w = Math.min(128, (W - 48 - gap * 2) / 3);
+    const h = 44;
+    const x0 = (W - (w * 3 + gap * 2)) / 2;
+    const y = H * 0.168 + 56;
+    return PACK_IDS.map((id, i) => ({ id, x: x0 + i * (w + gap), y, w, h }));
+  }
+
+  private buyOrEquip(id: ThemeId): void {
+    if (this.owned.includes(id)) {
+      this.applyTheme(id);
+      void this.writeSave();
+      this.sfx.select();
+      return;
+    }
+    const price = THEME_PRICE[id];
+    if (this.coins < price) {
+      this.sfx.deny();
+      this.showToast(this.copy.notEnough);
+      return;
+    }
+    this.coins -= price;
+    this.owned = normalizeOwned([...this.owned, id]);
+    this.applyTheme(id);
+    void this.writeSave();
+    this.sfx.winFanfare();
   }
 
   private async writeSave(): Promise<void> {
@@ -203,6 +377,11 @@ export class OrbRush {
       seenHow: this.seenHow,
       difficulty: this.rules.id,
       best: { ...this.bestBy },
+      coins: this.coins,
+      theme: this.theme,
+      owned: this.owned,
+      buyerId: this.buyerId,
+      claimed: this.claimed,
     };
     await persistSave(this.api, JSON.stringify(data));
     await submitBestScore(this.api, this.best);
@@ -261,14 +440,55 @@ export class OrbRush {
     });
   }
 
+  private playArea(W = this.canvas.width / this.dpr || window.innerWidth, H = this.canvas.height / this.dpr || window.innerHeight): {
+    w: number;
+    h: number;
+  } {
+    const chrome = this.playChrome(W, H);
+    const frame = chrome.compact ? 16 : 20;
+    return {
+      w: Math.max(160, W - chrome.pad * 2 - frame),
+      h: Math.max(160, chrome.availBot - chrome.availTop - frame),
+    };
+  }
+
+  private viewportRules(id: DiffId): Rules {
+    const area = this.playArea();
+    return rulesFor(id, area.w, area.h);
+  }
+
+  private playChrome(W: number, H: number) {
+    const tall = H / Math.max(1, W) >= 1.2;
+    const compact = tall || H < 700;
+    const pad = compact ? 12 : 16;
+    const top = compact ? 10 : 14;
+    const chipH = compact ? 46 : 58;
+    const nextH = compact ? 28 : 40;
+    const btnH = compact ? 44 : 52;
+    const nextY = top + chipH + 8;
+    return {
+      tall,
+      compact,
+      pad,
+      top,
+      chipH,
+      nextY,
+      nextH,
+      btnH,
+      availTop: nextY + nextH,
+      availBot: H - pad - btnH - 10,
+    };
+  }
+
   private pickDiff(id: DiffId): void {
-    this.rules = RULES[id];
+    this.rules = this.viewportRules(id);
     this.best = this.bestBy[id];
     void this.writeSave();
     this.newRun();
   }
 
   private newRun(): void {
+    this.rules = this.viewportRules(this.rules.id);
     this.board = emptyBoard(this.rules.rows, this.rules.cols);
     placeRandom(this.board, this.rules.start, false, this.rules.colors);
     placeRandom(this.board, this.rules.spawn, true, this.rules.colors);
@@ -317,7 +537,10 @@ export class OrbRush {
     this.score += gained;
     const mid = cells[Math.floor(cells.length / 2)];
     const { x, y } = this.cellCenter(mid.r, mid.c);
+    const coins = Math.max(1, Math.floor(gained / 15));
+    this.grantCoins(coins);
     this.fx.float(x, y, `+${gained}`, "#fff7ad", 26);
+    this.fx.float(x + 34, y + 16, `+${coins}`, "#ffe566", 14);
     this.fx.float(x, y - 28, this.comboWord(), PALETTE[Math.min(this.combo, this.rules.colors - 1)].glow, 22);
     clearCells(this.board, cells);
     if (this.score > this.best) {
@@ -364,6 +587,7 @@ export class OrbRush {
     if (this.over) return;
     if (occupiedCount(this.board) < this.rules.rows * this.rules.cols) return;
     this.over = true;
+    this.grantCoins(Math.floor(this.score / 25));
     this.sfx.gameOver();
     if (this.newBest) this.sfx.winFanfare();
     void this.writeSave();
@@ -397,16 +621,49 @@ export class OrbRush {
     if (this.paused) return;
     const W = this.canvas.width / this.dpr;
     const H = this.canvas.height / this.dpr;
-    const pad = 16;
+    const { pad, btnH } = this.playChrome(W, H);
 
     if (this.screen === "menu") {
       const bw = Math.min(320, W - 48);
       const bx = (W - bw) / 2;
-      if (hit(x, y, bx, H * 0.6, bw, 58)) {
+      if (hit(x, y, bx, H * 0.54, bw, 54)) {
         this.screen = this.seenHow ? "diff" : "how";
         this.sfx.select();
-      } else if (hit(x, y, bx, H * 0.6 + 72, bw, 50)) {
+      } else if (hit(x, y, bx, H * 0.54 + 62, bw, 48)) {
+        this.screen = "shop";
+        this.sfx.select();
+      } else if (hit(x, y, bx, H * 0.54 + 118, bw, 48)) {
         this.screen = "how";
+        this.sfx.select();
+      }
+      return;
+    }
+
+    if (this.screen === "shop") {
+      const ad = this.adCard(W, H);
+      if (hit(x, y, ad.x, ad.y, ad.w, ad.h)) {
+        void this.watchAd();
+        return;
+      }
+      for (const pack of this.packCards(W, H)) {
+        if (hit(x, y, pack.x, pack.y, pack.w, pack.h)) {
+          void this.buyPack(pack.id);
+          return;
+        }
+      }
+      for (const card of this.shopCards(W, H)) {
+        const bw = 108;
+        const bh = 40;
+        const bx = card.x + card.w - bw - 14;
+        const by = card.y + card.h / 2 - bh / 2;
+        if (hit(x, y, card.x, card.y, card.w, card.h) || hit(x, y, bx, by, bw, bh)) {
+          this.buyOrEquip(card.id);
+          return;
+        }
+      }
+      const bw = Math.min(280, W - 48);
+      if (hit(x, y, (W - bw) / 2, H * 0.88, bw, 48)) {
+        this.screen = "menu";
         this.sfx.select();
       }
       return;
@@ -453,19 +710,19 @@ export class OrbRush {
       return;
     }
 
-    const btnY = H - pad - 52;
+    const btnY = H - pad - btnH;
     const gap = 10;
     const bw = (W - pad * 2 - gap * 2) / 3;
-    if (hit(x, y, pad, btnY, bw, 48)) {
+    if (hit(x, y, pad, btnY, bw, btnH)) {
       this.useHint();
       return;
     }
-    if (hit(x, y, pad + bw + gap, btnY, bw, 48)) {
+    if (hit(x, y, pad + bw + gap, btnY, bw, btnH)) {
       this.newRun();
       this.sfx.select();
       return;
     }
-    if (hit(x, y, pad + (bw + gap) * 2, btnY, bw, 48)) {
+    if (hit(x, y, pad + (bw + gap) * 2, btnY, bw, btnH)) {
       this.screen = "menu";
       this.sfx.select();
       return;
@@ -602,6 +859,7 @@ export class OrbRush {
     if (this.screen === "menu") this.drawMenu(W, H);
     else if (this.screen === "diff") this.drawDiff(W, H);
     else if (this.screen === "how") this.drawHow(W, H);
+    else if (this.screen === "shop") this.drawShop(W, H);
     else this.drawPlay(W, H);
 
     this.fx.draw(ctx, this.art);
@@ -625,20 +883,21 @@ export class OrbRush {
     } else {
       drawLabel(ctx, this.copy.title, W / 2, H * 0.22, Math.min(52, W * 0.13), "#fff7ad", "center");
     }
-    drawLabel(ctx, this.copy.tagline, W / 2, H * 0.38, 16, "#fffdf8", "center", "700");
+    this.drawAccountBar(W);
+    drawLabel(ctx, this.copy.tagline, W / 2, H * 0.36, 15, "#fffdf8", "center", "700");
     drawLabel(
       ctx,
-      `${this.copy.best}: ${Math.max(...DIFFS.map((id) => this.bestBy[id]))}`,
+      `${this.copy.best}: ${Math.max(...DIFFS.map((id) => this.bestBy[id]))}   ·   ${this.copy.coins} ${this.coins}`,
       W / 2,
-      H * 0.43,
-      20,
+      H * 0.41,
+      18,
       "#ffe566",
       "center",
     );
 
     const demo = [0, 2, 4, 1, 6];
     demo.forEach((color, i) => {
-      drawOrb(ctx, W / 2 + (i - 2) * 48, H * 0.51, 18, color, {
+      drawOrb(ctx, W / 2 + (i - 2) * 44, H * 0.475, 16, color, {
         pulse: Math.sin(this.time * 3 + i),
         art: this.art,
       });
@@ -646,8 +905,75 @@ export class OrbRush {
 
     const bw = Math.min(320, W - 48);
     const bx = (W - bw) / 2;
-    drawButton(ctx, bx, H * 0.6, bw, 58, this.copy.play, "primary", this.art);
-    drawButton(ctx, bx, H * 0.6 + 72, bw, 50, this.copy.how, "ghost", this.art);
+    drawButton(ctx, bx, H * 0.54, bw, 54, this.copy.play, "primary", this.art);
+    drawButton(ctx, bx, H * 0.54 + 62, bw, 48, this.copy.shop, "ghost", this.art);
+    drawButton(ctx, bx, H * 0.54 + 118, bw, 48, this.copy.how, "ghost", this.art);
+  }
+
+  private drawAccountBar(W: number): void {
+    const yt = this.account.youtube;
+    const label = yt ? this.copy.accountYt : this.copy.accountGuest;
+    const hint = yt ? this.copy.accountYtHint : this.copy.accountGuestHint;
+    drawChip(this.ctx, 16, 12, Math.min(168, W * 0.42), 48, label, hint, yt ? "#1aa6c8" : "#6b2d86");
+    drawChip(this.ctx, W - 16 - 120, 12, 120, 48, this.copy.coins, String(this.coins), "#e2a400");
+  }
+
+  private shopCards(W: number, H: number): { id: ThemeId; x: number; y: number; w: number; h: number }[] {
+    const gap = 12;
+    const w = Math.min(440, W - 36);
+    const h = Math.min(112, H * 0.17);
+    const x = (W - w) / 2;
+    const y0 = stripeEnabled(this.api) ? H * 0.33 : H * 0.26;
+    return THEME_IDS.map((id, i) => ({ id, x, y: y0 + i * (h + gap), w, h }));
+  }
+
+  private drawShop(W: number, H: number): void {
+    this.drawAccountBar(W);
+    drawLabel(this.ctx, this.copy.shopTitle, W / 2, H * 0.125, 24, "#fff7ad", "center");
+    drawLabel(this.ctx, this.copy.adHint, W / 2, H * 0.15, 13, "#fffdf8", "center", "600");
+    const ad = this.adCard(W, H);
+    drawButton(this.ctx, ad.x, ad.y, ad.w, ad.h, this.copy.watchAd, "primary", this.art);
+    if (stripeEnabled(this.api)) {
+      for (const pack of this.packCards(W, H)) {
+        const info = COIN_PACKS[pack.id];
+        drawButton(
+          this.ctx,
+          pack.x,
+          pack.y,
+          pack.w,
+          pack.h,
+          `$${info.usd} · ${info.coins}`,
+          "primary",
+          this.art,
+        );
+      }
+    }
+    for (const card of this.shopCards(W, H)) {
+      const owned = this.owned.includes(card.id);
+      const equipped = this.theme === card.id;
+      const pack = this.packs[card.id] ?? this.art;
+      drawShopCard(this.ctx, card.x, card.y, card.w, card.h, equipped);
+      [0, 2, 4].forEach((color, i) => {
+        drawOrb(this.ctx, card.x + 36 + i * 28, card.y + card.h * 0.38, 13, color, {
+          pulse: Math.sin(this.time * 4 + i),
+          art: pack,
+        });
+      });
+      drawLabel(this.ctx, this.themeName(card.id), card.x + 16, card.y + card.h * 0.68, 16, "#4a1b6b");
+      drawLabel(this.ctx, this.themeHint(card.id), card.x + 16, card.y + card.h * 0.86, 11, "#6b2d86", "left", "700");
+      const bw = 108;
+      const bh = 40;
+      const bx = card.x + card.w - bw - 14;
+      const by = card.y + card.h / 2 - bh / 2;
+      const label = equipped
+        ? this.copy.equipped
+        : owned
+          ? this.copy.equip
+          : `${this.copy.buy} ${THEME_PRICE[card.id]}`;
+      drawButton(this.ctx, bx, by, bw, bh, label, equipped ? "primary" : owned ? "ghost" : "danger", this.art);
+    }
+    const bw = Math.min(280, W - 48);
+    drawButton(this.ctx, (W - bw) / 2, H * 0.88, bw, 48, this.copy.back, "ghost", this.art);
   }
 
   private diffName(id: DiffId): string {
@@ -676,7 +1002,7 @@ export class OrbRush {
     drawLabel(this.ctx, this.copy.diffTitle, W / 2, H * 0.13, 28, "#fff7ad", "center");
     drawLabel(this.ctx, this.copy.diffHint, W / 2, H * 0.19, 14, "#fffdf8", "center", "600");
     for (const card of this.diffCards(W, H)) {
-      const rules = RULES[card.id];
+      const rules = this.viewportRules(card.id);
       drawLevelCard(
         this.ctx,
         card.x,
@@ -714,37 +1040,26 @@ export class OrbRush {
 
   private drawPlay(W: number, H: number): void {
     const ctx = this.ctx;
-    const pad = 16;
-    const top = 14;
+    const { tall, compact, pad, top, chipH, nextY, btnH, availTop, availBot } = this.playChrome(W, H);
     const chipW = (W - pad * 2 - 16) / 3;
-    drawChip(ctx, pad, top, chipW, 58, this.copy.score, String(this.score), "#1aa6c8");
-    drawChip(ctx, pad + chipW + 8, top, chipW, 58, this.copy.combo, this.combo ? `x${this.combo}` : "-", "#d946a6");
-    drawChip(ctx, pad + (chipW + 8) * 2, top, chipW, 58, this.copy.best, String(this.best), "#e2a400");
+    drawChip(ctx, pad, top, chipW, chipH, this.copy.score, String(this.score), "#1aa6c8");
+    drawChip(ctx, pad + chipW + 8, top, chipW, chipH, this.copy.combo, this.combo ? `x${this.combo}` : "-", "#d946a6");
+    drawChip(ctx, pad + (chipW + 8) * 2, top, chipW, chipH, this.copy.best, String(this.best), "#e2a400");
 
-    const nextY = top + 74;
-    drawLabel(ctx, this.copy.next, pad + 4, nextY + 16, 12, "rgba(255,255,255,0.5)");
+    drawLabel(ctx, this.copy.next, pad + 4, nextY + 14, 12, "rgba(255,255,255,0.5)");
     const upcoming = this.nextColors();
     upcoming.forEach((color, i) => {
-      drawOrb(ctx, pad + 70 + i * 34, nextY + 16, 12, color, {
+      drawOrb(ctx, pad + 64 + i * (compact ? 28 : 34), nextY + 14, compact ? 10 : 12, color, {
         ghost: true,
         pulse: Math.sin(this.time * 4 + i),
         art: this.art,
       });
     });
-    drawLabel(
-      ctx,
-      `${this.diffName(this.rules.id)} ${this.rules.rows}×${this.rules.cols}  ·  ${this.copy.hint} ${this.hintsLeft}`,
-      W - pad,
-      nextY + 16,
-      13,
-      "#fff7ad",
-      "right",
-      "700",
-    );
+    const meta = tall
+      ? `${this.rules.rows}×${this.rules.cols} · ${this.coins} ${this.copy.coins}`
+      : `${this.diffName(this.rules.id)} ${this.rules.rows}×${this.rules.cols}  ·  ${this.copy.coins} ${this.coins}`;
+    drawLabel(ctx, meta, W - pad, nextY + 14, tall ? 12 : 13, "#fff7ad", "right", "700");
 
-    const btnH = 52;
-    const availTop = nextY + 40;
-    const availBot = H - pad - btnH - 14;
     const rows = this.rules.rows;
     const cols = this.rules.cols;
     const cell = Math.min((W - pad * 2) / cols, (availBot - availTop) / rows);
@@ -868,10 +1183,10 @@ export class OrbRush {
 
     const gap = 10;
     const bw = (W - pad * 2 - gap * 2) / 3;
-    const btnY = H - pad - btnH + 4;
-    drawButton(ctx, pad, btnY, bw, 48, `${this.copy.hint} ${this.hintsLeft}`, "ghost", this.art);
-    drawButton(ctx, pad + bw + gap, btnY, bw, 48, this.copy.newGame, "ghost", this.art);
-    drawButton(ctx, pad + (bw + gap) * 2, btnY, bw, 48, this.copy.menu, "danger", this.art);
+    const btnY = H - pad - btnH;
+    drawButton(ctx, pad, btnY, bw, btnH, `${this.copy.hint} ${this.hintsLeft}`, "ghost", this.art);
+    drawButton(ctx, pad + bw + gap, btnY, bw, btnH, this.copy.newGame, "ghost", this.art);
+    drawButton(ctx, pad + (bw + gap) * 2, btnY, bw, btnH, this.copy.menu, "danger", this.art);
 
     if (preview.length) {
       drawLabel(ctx, this.copy.almost, W / 2, by - 16, 18, "#ff4d6d", "center");

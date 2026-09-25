@@ -1,4 +1,4 @@
-import { loadArt } from "./art";
+import { loadArtLibrary } from "./art";
 import { OrbRush } from "./game";
 import { resolveLang, t } from "./i18n";
 import { inPlayables, loadSave, resolvePlatform } from "./platform";
@@ -19,8 +19,9 @@ async function start(): Promise<void> {
     }
   }
 
-  const art = await loadArt();
-  const game = new OrbRush(canvas, t(resolveLang(langTag)), art);
+  const lib = await loadArtLibrary();
+  const game = new OrbRush(canvas, t(resolveLang(langTag)), lib.fallback);
+  game.setThemePacks(lib.themes);
   (window as Window & { __orb?: OrbRush }).__orb = game;
 
   try {

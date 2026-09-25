@@ -1,3 +1,5 @@
+import { THEME_IDS, ThemeId } from "./themes";
+
 export type LevelId = "easy" | "normal" | "hard" | "insane";
 
 export type Art = {
@@ -155,46 +157,95 @@ function sliceOrbs(sheet: HTMLCanvasElement, want: number): HTMLCanvasElement[] 
   });
 }
 
-export async function loadArt(): Promise<Art | null> {
-  try {
-    const [bg, logo, cellImg, cellAltImg, boomImg, arrowImg, orbsImg, btnImg, levelImg] = await Promise.all([
+type Chrome = Pick<Art, "logo" | "boom" | "arrow" | "btns" | "levels">;
+
+async function loadChrome(): Promise<Chrome> {
+  const [logo, boomImg, arrowImg, btnImg, levelImg] = await Promise.all([
+    loadImage("./art/logo.png"),
+    loadImage("./art/boom.png"),
+    loadImage("./art/arrow.png"),
+    loadImage("./art/btns.png"),
+    loadImage("./art/levels.png"),
+  ]);
+  const btnParts = sliceOrbs(keyScreen(btnImg), 4);
+  const levelParts = sliceOrbs(keyScreen(levelImg), 4);
+  return {
+    logo: keyPurple(logo),
+    boom: keyGreen(boomImg),
+    arrow: trimCanvas(keyGreen(arrowImg)),
+    btns: {
+      primary: btnParts[0],
+      ghost: btnParts[1],
+      danger: btnParts[2],
+      gold: btnParts[3],
+    },
+    levels: {
+      easy: levelParts[0],
+      normal: levelParts[1],
+      hard: levelParts[2],
+      insane: levelParts[3],
+    },
+  };
+}
+
+async function loadThemeArt(id: ThemeId, chrome: Chrome): Promise<Art> {
+  if (id === "candy") {
+    const [bg, cellImg, cellAltImg, orbsImg] = await Promise.all([
       loadImage("./art/bg.jpg"),
-      loadImage("./art/logo.png"),
       loadImage("./art/cell.png"),
       loadImage("./art/cell-alt.png"),
-      loadImage("./art/boom.png"),
-      loadImage("./art/arrow.png"),
       loadImage("./art/orbs.png"),
-      loadImage("./art/btns.png"),
-      loadImage("./art/levels.png"),
     ]);
-    const orbs = sliceOrbs(keyGreen(orbsImg), 7);
-    const btnParts = sliceOrbs(keyScreen(btnImg), 4);
-    const levelParts = sliceOrbs(keyScreen(levelImg), 4);
     return {
+      ...chrome,
       bg,
-      logo: keyPurple(logo),
       cell: trimCanvas(keyGreen(cellImg)),
       cellAlt: trimCanvas(keyGreen(cellAltImg)),
-      boom: keyGreen(boomImg),
-      arrow: trimCanvas(keyGreen(arrowImg)),
-      orbs,
-      btns: {
-        primary: btnParts[0],
-        ghost: btnParts[1],
-        danger: btnParts[2],
-        gold: btnParts[3],
-      },
-      levels: {
-        easy: levelParts[0],
-        normal: levelParts[1],
-        hard: levelParts[2],
-        insane: levelParts[3],
-      },
+      orbs: sliceOrbs(keyGreen(orbsImg), 7),
     };
-  } catch {
-    return null;
   }
+
+  const root = id === "soccer" ? "./art/soccer" : "./art/egg";
+  const [bg, cellsImg, orbsImg] = await Promise.all([
+    loadImage(`${root}/bg.jpg`),
+    loadImage(`${root}/cells.png`),
+    loadImage(`${root}/orbs.png`),
+  ]);
+  const cells = sliceOrbs(keyScreen(cellsImg), 2);
+  return {
+    ...chrome,
+    bg,
+    cell: cells[0] ?? trimCanvas(keyScreen(cellsImg)),
+    cellAlt: cells[1] ?? cells[0] ?? trimCanvas(keyScreen(cellsImg)),
+    orbs: sliceOrbs(keyScreen(orbsImg), 7),
+  };
+}
+
+export async function loadArtLibrary(): Promise<{
+  themes: Partial<Record<ThemeId, Art>>;
+  fallback: Art | null;
+}> {
+  try {
+    const chrome = await loadChrome();
+    const themes: Partial<Record<ThemeId, Art>> = {};
+    await Promise.all(
+      THEME_IDS.map(async (id) => {
+        try {
+          themes[id] = await loadThemeArt(id, chrome);
+        } catch {
+          /* skip missing pack */
+        }
+      }),
+    );
+    return { themes, fallback: themes.candy ?? null };
+  } catch {
+    return { themes: {}, fallback: null };
+  }
+}
+
+export async function loadArt(): Promise<Art | null> {
+  const lib = await loadArtLibrary();
+  return lib.fallback;
 }
 
 export function drawCover(

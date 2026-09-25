@@ -16,6 +16,12 @@ function makeStub(): YtLike {
         localStorage.setItem(SAVE_KEY, data);
       },
     },
+    ads: {
+      async requestInterstitialAd() {},
+      async requestRewardedAd() {
+        return true;
+      },
+    },
     engagement: {
       async sendScore() {},
     },
@@ -44,12 +50,36 @@ function makeStub(): YtLike {
 }
 
 export function resolvePlatform(): YtLike {
-  if (typeof ytgame !== "undefined" && ytgame) return ytgame;
-  return makeStub();
+  const stub = makeStub();
+  if (typeof ytgame === "undefined" || !ytgame) return stub;
+  if (ytgame.IN_PLAYABLES_ENV) return { ...ytgame, ads: ytgame.ads ?? stub.ads };
+  return { ...ytgame, ads: stub.ads };
+}
+
+export const AD_REWARD_ID = "orbrush-coins-50";
+export const AD_REWARD_COINS = 50;
+
+export async function watchRewardedAd(api: YtLike): Promise<boolean> {
+  try {
+    return await api.ads.requestRewardedAd(AD_REWARD_ID);
+  } catch {
+    api.health.logWarning();
+    return false;
+  }
 }
 
 export function inPlayables(api: YtLike): boolean {
   return Boolean(api.IN_PLAYABLES_ENV);
+}
+
+export type Account = {
+  youtube: boolean;
+  id: string;
+};
+
+export function resolveAccount(api: YtLike): Account {
+  if (inPlayables(api)) return { youtube: true, id: "youtube" };
+  return { youtube: false, id: "guest" };
 }
 
 export async function loadSave(api: YtLike): Promise<string> {

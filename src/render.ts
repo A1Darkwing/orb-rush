@@ -265,6 +265,27 @@ export function drawLevelCard(
   ctx.restore();
 }
 
+export function drawShopCard(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  equipped: boolean,
+): void {
+  ctx.save();
+  ctx.fillStyle = equipped ? "rgba(255,247,173,0.92)" : "rgba(255,252,245,0.9)";
+  roundRect(ctx, x, y, w, h, 22);
+  ctx.fill();
+  if (equipped) {
+    ctx.strokeStyle = "#fff7ad";
+    ctx.lineWidth = 3;
+    roundRect(ctx, x + 3, y + 3, w - 6, h - 6, 18);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function drawChip(
   ctx: CanvasRenderingContext2D,
   x: number,

@@ -11,6 +11,10 @@ declare global {
           loadData: () => Promise<string>;
           saveData: (data: string) => Promise<void>;
         };
+        ads: {
+          requestInterstitialAd: () => Promise<void>;
+          requestRewardedAd: (rewardId: string) => Promise<boolean>;
+        };
         engagement: {
           sendScore: (score: { value: number }) => Promise<void>;
         };
